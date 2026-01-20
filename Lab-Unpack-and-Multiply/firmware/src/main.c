@@ -41,63 +41,51 @@
 #include <inttypes.h>   // required to print out pointers using PRIXPTR macro
 #include "definitions.h"                // SYS function prototypes
 #include "asmExterns.h"
-#include "testFuncs.h" // lab test structs
-#include "printFuncs.h"  // lab print funcs
-
-// asm function to get the SP value. Ensures tested code didn't
-// corrupt the SP. Does NOT ensure that the code actually pushed
-// on entry and popped on exit. Need to look at code to ensure that.
-#define GET_REG(XX,YY) asm volatile("mov %0," #XX : "=r"(*YY))
-
-// Define the global that gives access to the student's name
-extern uint32_t nameStrPtr;
-
-// set to false to skip tests when debugging
-bool doUnpackTest  = true;
-bool doAbsTest     = true;
-bool doMultTest    = true;
-bool doFixSignTest = true;
-bool doAsmMainTest = true;
-
-bool onlyPrintFails = true; // set this to false to see passing test cases, too
 
 /* RTC Time period match values for input clock of 1 KHz */
-#define PERIOD_1MS                              1
-#define PERIOD_10MS                             10
-#define PERIOD_100MS                            102
+#define PERIOD_50MS                             51
 #define PERIOD_500MS                            512
 #define PERIOD_1S                               1024
 #define PERIOD_2S                               2048
 #define PERIOD_4S                               4096
 
-#define MAX_PRINT_LEN 1000
+#define MAX_PRINT_LEN 2000
 
 static volatile bool isRTCExpired = false;
 static volatile bool changeTempSamplingRate = false;
 static volatile bool isUSARTTxComplete = true;
 static uint8_t uartTxBuffer[MAX_PRINT_LEN] = {0};
 
+#if 0
+// Test cases for testing func that adds 3 nums and returns the results
+// AND sets bits in global variables.
+static int32_t depositArray[] = {  0x80000001, 0, 0x80000001,
+                                   5,5,6};
+static int32_t withdrawalArray[] = {  0x80000001, 0x80000001, 0,
+                                      -2, -6, 5};
+static int32_t balanceArray[] = {  0, 0x80000001, 0x80000001,
+                                  -3, -9, 4};
+static int32_t problemArray[] = {1,1,1,0,0,0};
+#endif
 
-
-// the following array contains two 16b values packed into a 32b word.
-// Each line represents a single test case.
-// "tc" stands for test case
-static int32_t tc[] = {
-    0x00020003,
-    0xFFFC0003,  // -,+
-    0,           // 0,0
-    0x00000005,  // 0,+
-    0x0000FFFC,  // 0,-
-    0xFFFD0000,  // -,0
-    0x00020000,  // +,0
-    0x80008000,  // -,-
-    0xFFF3FFE0,  // -,-
-    0x7FF38001,  // +,-
-    0x7FF17FF2   // +,+
+// the following array defines pairs of {balance, transaction} values
+// tc stands for test case
+static int32_t tc[][2] = {
+    {         -4,          3},  // -,+
+    {          0,          0},  // 0,0
+    {          0,          5},  // 0,+
+    {          0, 0xFFFFFFFC},  // 0,-
+    { 0xFFFFFFFD,          0},  // -,0
+    {          2,          0},  // +,0
+    {     -32768,     -32768},  // -,-
+    { 0x00007FF3, 0xFFFF8001},  // +,-
+    { 0x00007FF1, 0x00007FF2},  // +,+
+    {      32768,      32768},  // limits test
+    {     -32769,     -32769}   // limits test
 };
 
-// static char * pass = "PASS";
-// static char * fail = "FAIL";
+static char * pass = "PASS";
+static char * fail = "FAIL *****";
 
 // VB COMMENT:
 // The ARM calling convention permits the use of up to 4 registers, r0-r3
@@ -106,31 +94,11 @@ static int32_t tc[] = {
 // in r0. The C compiler will automatically use it as the function's return
 // value.
 //
-/* These functions will be implemented by students in asmMult.s */
-/* asmUnpack: no return value */
-extern void asmUnpack(uint32_t packedValue, int32_t* a, int32_t* b);
-/* asmAbs: return abs value. Also store abs value at location absOut,
- * and sign bit at location signBit. Must b 0 for +, 1 for negative */
-extern int32_t asmAbs(int32_t input, int32_t *absOut, int32_t *signBit);
-/* return product of two positive integers guaranteed to be <= 2^16 */
-extern int32_t asmMult(int32_t a, int32_t b);
-/* return corrected product based on signs of two original input values */
-extern int32_t asmFixSign(int32_t initProduct, int32_t signBitA, int32_t signBitB);
-/* Executes student's asmMain() function that ties together all of the above */
-extern int32_t asmMain(uint32_t packedValue);
-
-#if 0
-extern int32_t a_Multiplicand;
-extern int32_t b_Multiplier;
-extern int32_t rng_Error;
-extern int32_t a_Sign;
-extern int32_t b_Sign;
-extern int32_t prod_Is_Neg;
-extern int32_t a_Abs;
-extern int32_t b_Abs;
-extern int32_t init_Product;
-extern int32_t final_Product;
-#endif
+// Function signature
+// for this lab, the function takes two args: multiplicand and multiplier.
+// Both inputs are signed, and limited to the range [-2^15,(2^15) - 1]
+// The result of their product is returned.
+extern int32_t asmMult(int32_t multiplicand, int32_t multiplier);
 
 
 // set this to 0 if using the simulator. BUT note that the simulator
@@ -154,6 +122,228 @@ static void usartDmaChannelHandler(DMAC_TRANSFER_EVENT event, uintptr_t contextH
 }
 #endif
 
+static void check(int32_t in1, 
+        int32_t in2, 
+        int32_t *goodCount, 
+        int32_t *badCount,
+        char **pfString )
+{
+    if (in1 == in2)
+    {
+        *goodCount += 1;
+        *pfString = pass;
+    }
+    else
+    {
+        *badCount += 1;
+        *pfString = fail;        
+    }
+    return;
+}
+
+// print the mem addresses of the global vars at startup
+// this is to help the students debug their code
+static void printGlobalAddresses(void)
+{
+    // build the string to be sent out over the serial lines
+    snprintf((char*)uartTxBuffer, MAX_PRINT_LEN,
+            "========= GLOBAL VARIABLES MEMORY ADDRESS LIST\r\n"
+            "global variable \"a_Multiplicand\" stored at address: 0x%" PRIXPTR "\r\n"
+            "global variable \"b_Multiplier\" stored at address:   0x%" PRIXPTR "\r\n"
+            "global variable \"rng_Error\" stored at address:      0x%" PRIXPTR "\r\n"
+            "global variable \"a_Sign\" stored at address:         0x%" PRIXPTR "\r\n"
+            "global variable \"b_Sign\" stored at address:         0x%" PRIXPTR "\r\n"
+            "global variable \"prod_Is_Neg\" stored at address:    0x%" PRIXPTR "\r\n"
+            "global variable \"a_Abs\" stored at address:          0x%" PRIXPTR "\r\n"
+            "global variable \"b_Abs\" stored at address:          0x%" PRIXPTR "\r\n"
+            "global variable \"init_Product\" stored at address:   0x%" PRIXPTR "\r\n"
+            "global variable \"final_Product\" stored at address:  0x%" PRIXPTR "\r\n"
+            "========= END -- GLOBAL VARIABLES MEMORY ADDRESS LIST\r\n"
+            "\r\n",
+            (uintptr_t)(&a_Multiplicand), 
+            (uintptr_t)(&b_Multiplier), 
+            (uintptr_t)(&rng_Error), 
+            (uintptr_t)(&a_Sign), 
+            (uintptr_t)(&b_Sign), 
+            (uintptr_t)(&prod_Is_Neg), 
+            (uintptr_t)(&a_Abs), 
+            (uintptr_t)(&b_Abs),
+            (uintptr_t)(&init_Product), 
+            (uintptr_t)(&final_Product)
+            ); 
+    isRTCExpired = false;
+    isUSARTTxComplete = false;
+
+#if USING_HW 
+    DMAC_ChannelTransfer(DMAC_CHANNEL_0, uartTxBuffer, \
+        (const void *)&(SERCOM5_REGS->USART_INT.SERCOM_DATA), \
+        strlen((const char*)uartTxBuffer));
+    // spin here, waiting for timer and UART to complete
+    while (isUSARTTxComplete == false); // wait for print to finish
+    /* reset it for the next print */
+    isUSARTTxComplete = false;
+#endif
+}
+
+
+// return failure count. A return value of 0 means everything passed.
+static int testResult(int testNum, 
+                      int32_t result, 
+                      int32_t *passCount,
+                      int32_t *failCount)
+{
+    // for this lab, each test case corresponds to a single pass or fail
+    // But for future labs, one test case may have multiple pass/fail criteria
+    // So I'm setting it up this way so it'll work for future labs, too --VB
+    *failCount = 0;
+    *passCount = 0;
+    char *aCheck = "OOPS!!!!!";
+    char *bCheck = "OOPS!!!!!";
+    char *rngCheck = "OOPS!!!!!";
+    char *aSignCheck = "OOPS!!!!!";
+    char *bSignCheck = "OOPS!!!!!";
+    char *prodSignCheck = "OOPS!!!!!";
+    char *aAbsCheck = "OOPS!!!!!";
+    char *bAbsCheck = "OOPS!!!!!";
+    char *initProdCheck = "OOPS!!!!!";
+    char *finalProdCheck = "OOPS!!!!!";
+    char *resultCheck = "OOPS!!!!!";
+    static bool firstTime = true;
+    int32_t myA = tc[testNum][0];
+    int32_t myB = tc[testNum][1];
+    int32_t myErrCheck = 0;
+    if( (myA > 32767) || (myA < -32768) || (myB > 32767) || (myB < -32768) )
+    {
+        myErrCheck = 1;
+        // myA = 0;
+        // myB = 0;
+    }
+    int32_t myAbsA = 0;
+    int32_t myAbsB = 0;
+    if (myErrCheck == 0)
+    {       
+         myAbsA = abs(myA);
+         myAbsB = abs(myB);
+    }
+    int32_t myFinalProd = 0;
+    int32_t myInitProd = 0;
+    int32_t mySignBitA = 0;
+    int32_t mySignBitB = 0;
+    int32_t myProdSign = 0;
+    int32_t myMemA = myA; // the value the code under test was supposed to store to mem
+    int32_t myMemB = myB; // the value the code under test was supposed to store to mem
+    if(myErrCheck == 0)
+    {
+        //myMemA = myA; // the value the code under test was supposed to store to mem
+        //myMemB = myB; // the value the code under test was supposed to store to mem
+        myFinalProd = myA * myB;
+        myInitProd = abs(myFinalProd);
+        if (myA < 0)
+        {
+            mySignBitA = 1;
+        }
+        if (myB < 0)
+        {
+            mySignBitB = 1;
+        }
+        if (((myA < 0) && (myB > 0)) || ((myA > 0) && (myB < 0)))
+        {
+            myProdSign = 1;
+        }
+    }
+    
+    
+    check(myMemA, a_Multiplicand, passCount, failCount, &aCheck);
+    check(myMemB, b_Multiplier, passCount, failCount, &bCheck);
+    check(myErrCheck, rng_Error, passCount, failCount, &rngCheck);
+    check(mySignBitA, a_Sign, passCount, failCount, &aSignCheck);
+    check(mySignBitB, b_Sign, passCount, failCount, &bSignCheck);
+    check(myProdSign, prod_Is_Neg, passCount, failCount, &prodSignCheck);
+    check(myAbsA, a_Abs, passCount, failCount, &aAbsCheck);
+    check(myAbsB, b_Abs, passCount, failCount, &bAbsCheck);
+    check(myInitProd, init_Product, passCount, failCount, &initProdCheck);
+    check(myFinalProd, final_Product, passCount, failCount, &finalProdCheck);
+    check(myFinalProd, result, passCount, failCount, &resultCheck);
+    
+    /* Do first time stuff here, if needed!!!  */
+    if (firstTime == true)
+    {
+        /* Do first time stuff here, if needed!!!  */
+        
+        firstTime = false; // don't check the strings for subsequent test cases
+    }
+           
+    // build the string to be sent out over the serial lines
+    snprintf((char*)uartTxBuffer, MAX_PRINT_LEN,
+            "========= Test Number: %d =========\r\n"
+            "test case INPUT: multiplier (a):   %11ld\r\n"
+            "test case INPUT: multiplicand (b): %11ld\r\n"
+            "a mem check p/f:       %s\r\n"
+            "b mem check p/f:       %s\r\n"
+            "input range check p/f: %s\r\n"
+            "sign bit a check p/f:  %s\r\n"
+            "sign bit b check p/f:  %s\r\n"
+            "prod sign check p/f:   %s\r\n"
+            "abs a check p/f:       %s\r\n"
+            "abs b check p/f:       %s\r\n"
+            "initial product p/f:   %s\r\n"
+            "final product p/f:     %s\r\n"
+            "returned result p/f:   %s\r\n"
+            "debug values        expected        actual\r\n"
+            "a_Multiplicand:..%11ld   %11ld\r\n"
+            "b_Multiplier:....%11ld   %11ld\r\n"
+            "error check:.....%11ld   %11ld\r\n"
+            "a_Sign:..........%11ld   %11ld\r\n"
+            "b_Sign:..........%11ld   %11ld\r\n"
+            "prod_Is_Neg:.....%11ld   %11ld\r\n"
+            "a_Abs:...........%11ld   %11ld\r\n"
+            "b_Abs:...........%11ld   %11ld\r\n"
+            "init_Product:....%11ld   %11ld\r\n"
+            "final_Product:...%11ld   %11ld\r\n"
+            "returned value:..%11ld   %11ld\r\n",
+            testNum,
+            myA, 
+            myB,
+            aCheck,
+            bCheck,
+            rngCheck,
+            aSignCheck,
+            bSignCheck,
+            prodSignCheck,
+            aAbsCheck,
+            bAbsCheck,
+            initProdCheck,
+            finalProdCheck,
+            resultCheck,
+            myMemA, a_Multiplicand,
+            myMemB, b_Multiplier,
+            myErrCheck,rng_Error,
+            mySignBitA, a_Sign,
+            mySignBitB, b_Sign,
+            myProdSign, prod_Is_Neg,
+            myAbsA, a_Abs,
+            myAbsB, b_Abs,
+            myInitProd, init_Product,
+            myFinalProd, final_Product,
+            myFinalProd, result
+            );
+
+#if USING_HW 
+    // send the string over the serial bus using the UART
+    DMAC_ChannelTransfer(DMAC_CHANNEL_0, uartTxBuffer, \
+        (const void *)&(SERCOM5_REGS->USART_INT.SERCOM_DATA), \
+        strlen((const char*)uartTxBuffer));
+
+    // spin here until the UART has completed transmission
+    //while  (false == isUSARTTxComplete ); 
+    while (isUSARTTxComplete == false);
+    isUSARTTxComplete = false;
+#endif
+
+    return *failCount;
+    
+}
+
 
 
 // *****************************************************************************
@@ -170,7 +360,7 @@ int main ( void )
     SYS_Initialize ( NULL );
     DMAC_ChannelCallbackRegister(DMAC_CHANNEL_0, usartDmaChannelHandler, 0);
     RTC_Timer32CallbackRegister(rtcEventHandler, 0);
-    RTC_Timer32Compare0Set(PERIOD_1MS);
+    RTC_Timer32Compare0Set(PERIOD_50MS);
     RTC_Timer32CounterSet(0);
     RTC_Timer32Start();
 #else // using the simulator
@@ -178,456 +368,81 @@ int main ( void )
     isUSARTTxComplete = true;
 #endif //SIMULATOR
     
-    printGlobalAddresses((char *)uartTxBuffer, &isUSARTTxComplete);
+    printGlobalAddresses();
+    
+    // initialize the values used by the assembly code so that they are
+    // not just random
+    asmExternsInit();
 
     // initialize all the variables
     int32_t passCount = 0;
     int32_t failCount = 0;
+    int32_t totalPassCount = 0;
+    int32_t totalFailCount = 0;
+    int32_t totalTests = 0;
     // int32_t x1 = sizeof(tc);
     // int32_t x2 = sizeof(tc[0]);
     uint32_t numTestCases = sizeof(tc)/sizeof(tc[0]);
-    uint32_t sp1, sp2; // variables to hold the SP values before and after func calls
-    uint32_t *sp1Ptr = &sp1;
-    uint32_t *sp2Ptr = &sp2;
     
-    static expectedValues exp;
-
     // Loop forever
     while ( true )
     {
-        // Do the tests for asmUnpack
-        int32_t unpackTotalPassCount = 0;
-        int32_t unpackTotalFailCount = 0;
-        int32_t unpackTotalTests = 0;
-
-        if (doUnpackTest == true)
+        // Do the tests
+        for (int testCase = 0; testCase < numTestCases; ++testCase)
         {
+            // Toggle the LED to show we're running a new test case
+            LED0_Toggle();
 
-            for (int testCase = 0; testCase < numTestCases; ++testCase)
+            // reset the state variables for the timer and serial port funcs
+            isRTCExpired = false;
+            isUSARTTxComplete = false;
+            
+            // set the input values 
+            int32_t a = tc[testCase][0];  // multiplicand
+            int32_t b = tc[testCase][1];  // multiplier
+            
+            // to break at a specific test case, change the number in the
+            // if statement. Then set a breakpoint on the line inside the
+            // if statement.
+            if (testCase == 50)
             {
-                // Toggle the LED to show we're running a new test case
-                LED0_Toggle();
+                LED0_Toggle();   
+            }
 
-                // reset the state variables for the timer and serial port funcs
-                isRTCExpired = false;
-                isUSARTTxComplete = false;
-                passCount = 0;
-                failCount = 0;
-                
-                // Get the packed value for this test case 
-                int32_t packedValue = tc[testCase];  // multiplicand and multiplier
-                calcExpectedValues(testCase,"",packedValue,&exp);
-                
-                int32_t unpackedA = 0x42424242;
-                int32_t unpackedB = 0x42424242;
-                
-                // !!!! THIS IS WHERE YOUR ASSEMBLY LANGUAGE PROGRAM GETS CALLED!!!!
-                // Call our assembly function defined in file asmMult.s
-                // Send in the test case value, see if the results are correct
-                GET_REG(sp, sp1Ptr); // get SP value before the call
-                asmUnpack(exp.packedVal, &unpackedA, &unpackedB);
-                GET_REG(sp, sp2Ptr); // get SP value after the call
-                
-                testAsmUnpack(testCase,
-                        "",
-                        exp.packedVal, // inputs
-                        &unpackedA,     // outputs
-                        &unpackedB,
-                        exp.inputA,    // expected values
-                        exp.inputB,
-                        sp1,
-                        sp2,
-                        &passCount,
-                        &failCount,
-                        onlyPrintFails,
-                        &isUSARTTxComplete
-                        );
-                // print summary of tests executed so far
-                unpackTotalPassCount = unpackTotalPassCount + passCount;
-                unpackTotalFailCount = unpackTotalFailCount + failCount;
-                unpackTotalTests = unpackTotalPassCount + unpackTotalFailCount;
+            // !!!! THIS IS WHERE YOUR ASSEMBLY LANGUAGE PROGRAM GETS CALLED!!!!
+            // Call our assembly function defined in file asmMult.s
+            int32_t result = asmMult(a, b);
+            
+            // test the result and see if it passed
+            failCount = testResult(testCase,result,
+                                   &passCount,&failCount);
+            totalPassCount = totalPassCount + passCount;
+            totalFailCount = totalFailCount + failCount;
+            totalTests = totalPassCount + totalFailCount;
 
-                isUSARTTxComplete = false;
-                snprintf((char*)uartTxBuffer, MAX_PRINT_LEN,
-                        "========= asmUnpack In-progress test summary:\r\n"
-                        "%ld of %ld tests passed so far...\r\n"
-                        "\r\n",
-                        unpackTotalPassCount, unpackTotalTests); 
-                
-                printAndWait((char*)uartTxBuffer,&isUSARTTxComplete);
+#if USING_HW
 
-                // spin here until the LED toggle timer has expired. This allows
-                // the test cases to be spread out in time.
-                while (isRTCExpired == false);
-            } // end: loop on all test cases for asmUnpack
+            // print summary of tests executed so far
             isUSARTTxComplete = false;
             snprintf((char*)uartTxBuffer, MAX_PRINT_LEN,
-                    "========= asmUnpack TESTS COMPLETE: \r\n"
-                    "Summary of tests: %ld of %ld tests passed\r\n"
+                    "========= In-progress test summary:\r\n"
+                    "%ld of %ld tests passed so far...\r\n"
                     "\r\n",
-                    unpackTotalPassCount, unpackTotalTests); 
-            printAndWait((char*)uartTxBuffer,&isUSARTTxComplete);
+                    totalPassCount, totalTests); 
 
-            // STUDENTS: put a breakpoint at the next instruction to see the 
-            // results of the asmUnpack tests!
-            isUSARTTxComplete = false;
-        } // if doUnpackTest == true
+            DMAC_ChannelTransfer(DMAC_CHANNEL_0, uartTxBuffer, \
+                (const void *)&(SERCOM5_REGS->USART_INT.SERCOM_DATA), \
+                strlen((const char*)uartTxBuffer));
 
-
-        int32_t absTotalPassCount = 0;
-        int32_t absTotalFailCount = 0;
-        int32_t absTotalTests = 0;
-        if (doAbsTest == true)
-        {
-            // Do the tests for asmAbs
-            for (int testCase = 0; testCase < numTestCases; ++testCase)
-            {
-                // Toggle the LED to show we're running a new test case
-                LED0_Toggle();
-
-                // reset the state variables for the timer and serial port funcs
-                isRTCExpired = false;
-                isUSARTTxComplete = false;
-
-                passCount = 0;
-                failCount = 0;
-                
-                // Get the packed value for this test case 
-                int32_t packedValue = tc[testCase];  // multiplicand and multiplier
-                calcExpectedValues(testCase,"",packedValue,&exp);
-                
-                int32_t absA = 0x42424242;
-                int32_t absB = 0x42424242;
-                int32_t signBitA = 0x42424242;
-                int32_t signBitB = 0x42424242;
-                
-                // test the absolute value of A
-                GET_REG(sp, sp1Ptr); // get SP value before the call
-                int32_t r0_absValA = asmAbs(exp.inputA, &absA, &signBitA);
-                GET_REG(sp, sp2Ptr); // get SP value before the call
-
-                testAsmAbs(testCase,
-                        "",
-                        exp.inputA,  //inputs
-                        &absA,        // I/O
-                        &signBitA,
-                        r0_absValA,   // outputs
-                        exp.absA,  // expected values
-                        exp.signA,
-                        sp1,
-                        sp2,
-                        &passCount,
-                        &failCount,
-                        onlyPrintFails,
-                        &isUSARTTxComplete
-                        );
-     
-                absTotalPassCount = absTotalPassCount + passCount;
-                absTotalFailCount = absTotalFailCount + failCount;
-
-                passCount = 0;
-                failCount = 0;
-                
-                absA = 0x42424242;
-                absB = 0x42424242;
-                signBitA = 0x42424242;
-                signBitB = 0x42424242;
-                
-                // test the absolute value of B
-                GET_REG(sp, sp1Ptr); // get SP value before the call
-                int32_t r0_absValB = asmAbs(exp.inputB, &absB, &signBitB);
-                GET_REG(sp, sp2Ptr); // get SP value before the call
-
-                testAsmAbs(testCase,
-                        "",
-                        exp.inputB,  //inputs
-                        &absB,        // I/O
-                        &signBitB,
-                        r0_absValB,   // outputs
-                        exp.absB,  // expected values
-                        exp.signB,
-                        sp1,
-                        sp2,
-                        &passCount,
-                        &failCount,
-                        onlyPrintFails,
-                        &isUSARTTxComplete
-                        );
-
-                // print summary of tests executed so far. Sums both A and B tests
-                absTotalPassCount = absTotalPassCount + passCount;
-                absTotalFailCount = absTotalFailCount + failCount;
-                absTotalTests = absTotalPassCount + absTotalFailCount;
-
-                isUSARTTxComplete = false;
-                snprintf((char*)uartTxBuffer, MAX_PRINT_LEN,
-                        "========= asmAbs In-progress test summary:\r\n"
-                        "%ld of %ld tests passed so far...\r\n"
-                        "\r\n",
-                        absTotalPassCount, absTotalTests); 
-                
-                printAndWait((char*)uartTxBuffer,&isUSARTTxComplete);
-
-                // spin here until the LED toggle timer has expired. This allows
-                // the test cases to be spread out in time.
-                while (isRTCExpired == false);
-            } // end: loop on all test cases for asmAbs A and B
+            // spin here until the UART has completed transmission
+            // and the LED toggle timer has expired. This allows
+            // the test cases to be spread out in time.
+            while ((isRTCExpired == false) ||
+                   (isUSARTTxComplete == false));
             
-            isUSARTTxComplete = false;
-            snprintf((char*)uartTxBuffer, MAX_PRINT_LEN,
-                    "========= asmAbs TESTS COMPLETE: \r\n"
-                    "Summary of tests: %ld of %ld tests passed\r\n"
-                    "\r\n",
-                    absTotalPassCount, absTotalTests); 
-            printAndWait((char*)uartTxBuffer,&isUSARTTxComplete);
-            
-            // STUDENTS: put a breakpoint at the next instruction to see the 
-            // results of the asmAbs tests!
-            isUSARTTxComplete = false;
-        } //  if doAbsTest == true
-        
-       
-       
-        // test cases for asmMult function
-        int32_t multTotalPassCount = 0;
-        int32_t multTotalFailCount = 0;
-        int32_t multTotalTests = 0;
-        if (doMultTest == true)
-        {
-            /* return product of two positive integers guaranteed to be <= 2^16 */
-            for (int testCase = 0; testCase < numTestCases; ++testCase)
-            {
-                // Toggle the LED to show we're running a new test case
-                LED0_Toggle();
+#endif
 
-                // reset the state variables for the timer and serial port funcs
-                isRTCExpired = false;
-                isUSARTTxComplete = false;
-                
-                passCount = 0;
-                failCount = 0;
-                    // Get the packed value for this test case 
-                int32_t packedValue = tc[testCase];  // multiplicand and multiplier
-                calcExpectedValues(testCase,"",packedValue,&exp);
-                
-                // !!!! THIS IS WHERE YOUR ASSEMBLY LANGUAGE PROGRAM GETS CALLED!!!!
-                // Call our assembly function defined in file asmMult.s
-                // initConservedRegs(conservedRegInitValues);            // set the input values 
-                GET_REG(sp, sp1Ptr); // get SP value before the call
-                int32_t r0_initProd = asmMult(exp.absA, exp.absB);
-                GET_REG(sp, sp2Ptr); // get SP value before the call
-
-                testAsmMult(testCase,
-                        "",
-                        exp.absA, // inputs
-                        exp.absB,
-                        r0_initProd, // outputs
-                        exp.initProduct, // expected values
-                        sp1,
-                        sp2,
-                        &passCount,
-                        &failCount,
-                        onlyPrintFails,
-                        &isUSARTTxComplete
-                        );
-                
-                multTotalPassCount = multTotalPassCount + passCount;
-                multTotalFailCount = multTotalFailCount + failCount;
-                multTotalTests = multTotalPassCount + multTotalFailCount;
-
-                isUSARTTxComplete = false;
-                snprintf((char*)uartTxBuffer, MAX_PRINT_LEN,
-                        "========= asmMult In-progress test summary:\r\n"
-                        "%ld of %ld tests passed so far...\r\n"
-                        "\r\n",
-                        multTotalPassCount, multTotalTests); 
-                
-                printAndWait((char*)uartTxBuffer,&isUSARTTxComplete);
-
-                // spin here until the LED toggle timer has expired. This allows
-                // the test cases to be spread out in time.
-                while (isRTCExpired == false);
-            } // end: loop on all test cases for asmMult
-            
-            isUSARTTxComplete = false;
-            snprintf((char*)uartTxBuffer, MAX_PRINT_LEN,
-                    "========= asmMult TESTS COMPLETE: \r\n"
-                    "Summary of tests: %ld of %ld tests passed\r\n"
-                    "\r\n",
-                    multTotalPassCount, multTotalTests); 
-            printAndWait((char*)uartTxBuffer,&isUSARTTxComplete);
-            
-            // STUDENTS: put a breakpoint at the next instruction to see the 
-            // results of the asmMult tests!
-            isUSARTTxComplete = false;
-            
-        } // end -- if doMultTest == true
-
-
-        
-        // test cases for asmFixSign function
-        int32_t fsTotalPassCount = 0;
-        int32_t fsTotalFailCount = 0;
-        int32_t fsTotalTests = 0;
-        if (doFixSignTest == true)
-        {
-            for (int testCase = 0; testCase < numTestCases; ++testCase)
-            {
-                // Toggle the LED to show we're running a new test case
-                LED0_Toggle();
-
-                // reset the state variables for the timer and serial port funcs
-                isRTCExpired = false;
-                isUSARTTxComplete = false;
-                
-                passCount = 0;
-                failCount = 0;
-                
-                resetGlobalVars();
-                
-                // Get the packed value for this test case 
-                int32_t packedValue = tc[testCase];  // multiplicand and multiplier
-                calcExpectedValues(testCase,"",packedValue,&exp);
-                
-                // !!!! THIS IS WHERE YOUR ASSEMBLY LANGUAGE PROGRAM GETS CALLED!!!!
-                /* return corrected product based on signs of two original input values */
-                // provide the correct value as inputs,
-                // see if the sign is adjusted correctly
-                GET_REG(sp, sp1Ptr); // get SP value before the call
-                int32_t r0_finalProduct = asmFixSign(exp.initProduct, 
-                        exp.signA, 
-                        exp.signB);
-                GET_REG(sp, sp2Ptr); // get SP value before the call
-
-                testAsmFixSign(testCase,
-                        "DEBUG",
-                        exp.initProduct, // inputs
-                        exp.signA, 
-                        exp.signB,
-                        r0_finalProduct, // outputs
-                        exp.finalProduct, // expected values
-                        sp1,
-                        sp2,
-                        &passCount,
-                        &failCount,
-                        onlyPrintFails,
-                        &isUSARTTxComplete
-                        );
-                fsTotalPassCount = fsTotalPassCount + passCount;
-                fsTotalFailCount = fsTotalFailCount + failCount;
-                fsTotalTests = fsTotalPassCount + fsTotalFailCount;
-
-                isUSARTTxComplete = false;
-                snprintf((char*)uartTxBuffer, MAX_PRINT_LEN,
-                        "========= asmFixSign In-progress test summary:\r\n"
-                        "%ld of %ld tests passed so far...\r\n"
-                        "\r\n",
-                        fsTotalPassCount, fsTotalTests); 
-                
-                printAndWait((char*)uartTxBuffer,&isUSARTTxComplete);
-
-                // spin here until the LED toggle timer has expired. This allows
-                // the test cases to be spread out in time.
-                while (isRTCExpired == false);
-            } // end: loop on all test cases for asmFixSign
-            
-            isUSARTTxComplete = false;
-            snprintf((char*)uartTxBuffer, MAX_PRINT_LEN,
-                    "========= asmFixSign TESTS COMPLETE: \r\n"
-                    "Summary of tests: %ld of %ld tests passed\r\n"
-                    "\r\n",
-                    fsTotalPassCount, fsTotalTests); 
-            printAndWait((char*)uartTxBuffer,&isUSARTTxComplete);
-            
-            // STUDENTS: put a breakpoint at the next instruction to see the 
-            // results of the asmFixSign tests!
-            isUSARTTxComplete = false;
-            
-        } // end -- if doFixSignTest == true
-
-
-
-       
-        // test cases for asmMain function
-        int32_t mainTotalPassCount = 0;
-        int32_t mainTotalFailCount = 0;
-        int32_t mainTotalTests = 0;
-        if (doAsmMainTest == true)
-        {
-            // return product of two positive integers guaranteed to be <= 2^16 
-            for (int testCase = 0; testCase < numTestCases; ++testCase)
-            {
-                // Toggle the LED to show we're running a new test case
-                LED0_Toggle();
-
-                // reset the state variables for the timer and serial port funcs
-                isRTCExpired = false;
-                isUSARTTxComplete = false;
-                passCount = 0;
-                failCount = 0;
-
-                resetGlobalVars();
-
-                // Get the packed value for this test case 
-                int32_t packedValue = tc[testCase];  // multiplicand and multiplier
-                calcExpectedValues(testCase,"",packedValue,&exp);
-                
-                // !!!! THIS IS WHERE YOUR ASSEMBLY LANGUAGE PROGRAM GETS CALLED!!!!
-                // Call our assembly function defined in file asmMult.s
-                
-                GET_REG(sp, sp1Ptr); // get SP value before the call
-                int32_t r0_mainFinalProd = asmMain(packedValue);
-                GET_REG(sp, sp2Ptr); // get SP value before the call
-
-                testAsmMain(testCase,
-                        "",
-                        exp.packedVal, // inputs
-                        r0_mainFinalProd, // outputs
-                        a_Multiplicand, // val stored in mem
-                        b_Multiplier,  // val stored in mem
-                        a_Abs, a_Sign, b_Abs, b_Sign,
-                        init_Product,
-                        final_Product,
-                        &exp, // expected values
-                        sp1,
-                        sp2,
-                        &passCount,
-                        &failCount,
-                        onlyPrintFails,
-                        &isUSARTTxComplete
-                        );
-
-                            
-                mainTotalPassCount = mainTotalPassCount + passCount;
-                mainTotalFailCount = mainTotalFailCount + failCount;
-                mainTotalTests = mainTotalPassCount + mainTotalFailCount;
-
-                isUSARTTxComplete = false;
-                snprintf((char*)uartTxBuffer, MAX_PRINT_LEN,
-                        "========= asmMain In-progress test summary:\r\n"
-                        "%ld of %ld tests passed so far...\r\n"
-                        "\r\n",
-                        mainTotalPassCount, mainTotalTests); 
-                
-                printAndWait((char*)uartTxBuffer,&isUSARTTxComplete);
-
-                // spin here until the LED toggle timer has expired. This allows
-                // the test cases to be spread out in time.
-                while (isRTCExpired == false);
-            } // end: loop on all test cases for asmMult
-            
-            isUSARTTxComplete = false;
-            snprintf((char*)uartTxBuffer, MAX_PRINT_LEN,
-                    "========= asmMain TESTS COMPLETE: \r\n"
-                    "Summary of tests: %ld of %ld tests passed\r\n"
-                    "\r\n",
-                    mainTotalPassCount, mainTotalTests); 
-            printAndWait((char*)uartTxBuffer,&isUSARTTxComplete);
-
-            // STUDENTS: put a breakpoint at the next instruction to see the 
-            // results of the asmMain tests!
-            isUSARTTxComplete = false;
-        } // end -- if doAsmMainTest == true
+        } // for each test case
         
         // When all test cases are complete, print the pass/fail statistics
         // Keep looping so that students can see code is still running.
@@ -636,74 +451,32 @@ int main ( void )
         uint32_t idleCount = 1;
         // uint32_t totalTests = totalPassCount + totalFailCount;
         bool firstTime = true;
-        // Total points should be 50 to match the lab question
-        // uint32_t numPtsPerFunc = 10; 
-        // Some of the functions pass many test cases even if there's
-        // little or no asm code in the student file.
-        // The weights were chosen so that the functions that pass even
-        // wih little or no asm code have a lower weighting.
-        uint32_t unpackPts, absPts, multPts, fsPts, mainPts, totalPts;
-        uint32_t unpackWt = 12; // point weighting for unpack tests
-        uint32_t absWt    = 12; // point weighting for unpack tests
-        uint32_t multWt   = 7; // point weighting for unpack tests
-        uint32_t fsWt     = 7; // point weighting for unpack tests
-        uint32_t mainWt   = 12; // point weighting for unpack tests
-        uint32_t totalPtsPossible = unpackWt+absWt+multWt+fsWt+mainWt;
-        unpackPts = unpackWt*unpackTotalPassCount/unpackTotalTests;
-        absPts = absWt*absTotalPassCount/absTotalTests;
-        multPts = multWt*multTotalPassCount/multTotalTests;
-        fsPts = fsWt*fsTotalPassCount/fsTotalTests;
-        mainPts = mainWt*mainTotalPassCount/mainTotalTests;
-        totalPts = unpackPts + absPts + multPts + fsPts + mainPts;
-        
         while(true)      // post-test forever loop
         {
             isRTCExpired = false;
             isUSARTTxComplete = false;
-            // Only print all results if tests for all funcs were run
-            if (doUnpackTest == true && 
-                    doAbsTest == true && 
-                    doMultTest == true &&
-                    doFixSignTest == true &&
-                    doAsmMainTest == true)
-            {
-                snprintf((char*)uartTxBuffer, MAX_PRINT_LEN,
-                    "========= %s: Functions Lab ALL TESTS COMPLETE: Post-test Idle Cycle Number: %ld\r\n"
-                    "Summary of tests: asmUnpack:  %ld of %ld tests passed; %ld/%ld pts\r\n"
-                    "Summary of tests: asmAbs:     %ld of %ld tests passed; %ld/%ld pts\r\n"
-                    "Summary of tests: asmMult:    %ld of %ld tests passed; %ld/%ld pts\r\n"
-                    "Summary of tests: asmFixSign: %ld of %ld tests passed; %ld/%ld pts\r\n"
-                    "Summary of tests: asmMain:    %ld of %ld tests passed; %ld/%ld pts\r\n"
-                    "%s: Final score, all tests: %ld/%ld pts\r\n"
+            uint32_t numPointsMax = 40;
+            uint32_t pointsScored = numPointsMax * totalPassCount / totalTests;
+            snprintf((char*)uartTxBuffer, MAX_PRINT_LEN,
+                    "========= %s: Lab 7 Multiply: ALL TESTS COMPLETE: Post-test Idle Cycle Number: %ld\r\n"
+                    "Summary of tests: %ld of %ld tests passed\r\n"
+                    "%-12s: Final score: %ld of %ld points\r\n"
                     "FINI!!!!!\r\n"
                     "\r\n",
                     (char *) nameStrPtr, idleCount, 
-                    unpackTotalPassCount, unpackTotalTests, unpackPts, unpackWt,
-                    absTotalPassCount, absTotalTests, absPts, absWt,
-                    multTotalPassCount, multTotalTests, multPts, multWt,
-                    fsTotalPassCount, fsTotalTests, fsPts, fsWt,
-                    mainTotalPassCount, mainTotalTests, mainPts, mainWt,
-                    (char *) nameStrPtr, totalPts, totalPtsPossible
-                    ); 
-            }
-            else
-            {
-                snprintf((char*)uartTxBuffer, MAX_PRINT_LEN,
-                    "========= %s: PARTIAL tests complete, make sure to rerun with all tests enabled!!!\r\n"
-                    "Post-test Idle Cycle Number: %ld\r\n"
-                    "FINI!!!!!\r\n",
-                    (char *) nameStrPtr, idleCount);
-            }
+                    totalPassCount, totalTests,
+                    (char *) nameStrPtr, pointsScored, numPointsMax); 
 
 #if USING_HW 
-            isUSARTTxComplete = false;
-            // spin here, waiting for UART to complete
-            printAndWait((char*)uartTxBuffer, &isUSARTTxComplete);
+            DMAC_ChannelTransfer(DMAC_CHANNEL_0, uartTxBuffer, \
+                (const void *)&(SERCOM5_REGS->USART_INT.SERCOM_DATA), \
+                strlen((const char*)uartTxBuffer));
+            // spin here, waiting for timer and UART to complete
             LED0_Toggle();
             ++idleCount;
 
-            // spin here, waiting for LED toggle timer to complete
-            while (isRTCExpired == false);
+            while ((isRTCExpired == false) ||
+                   (isUSARTTxComplete == false));
 
             // slow down the blink rate after the tests have been executed
             if (firstTime == true)

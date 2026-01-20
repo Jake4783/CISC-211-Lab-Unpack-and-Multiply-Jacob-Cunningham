@@ -244,10 +244,6 @@
       </logicalFolder>
       <itemPath>../src/main.c</itemPath>
       <itemPath>../src/asmMult.s</itemPath>
-      <itemPath>../src/printFuncs.c</itemPath>
-      <itemPath>../src/printFuncs.h</itemPath>
-      <itemPath>../src/testFuncs.c</itemPath>
-      <itemPath>../src/testFuncs.h</itemPath>
       <itemPath>../src/asmExterns.h</itemPath>
     </logicalFolder>
   </logicalFolder>
