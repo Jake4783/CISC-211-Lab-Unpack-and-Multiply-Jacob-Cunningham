@@ -12,7 +12,7 @@
 .type nameStr,%gnu_unique_object
     
 /*** STUDENTS: Change the next line to your name!  **/
-nameStr: .asciz "Inigo Montoya"  
+nameStr: .asciz "Jacob Cunningham"  
 
 .align   /* realign so that next mem allocations are on word boundaries */
  
@@ -81,6 +81,91 @@ asmMult:
     
     /*** STUDENTS: Place your code BELOW this line!!! **************/
     
+    ldr r1, =packed_Value
+    str r0, [r1]
+
+    ldr r1, =a_Multiplicand
+    mov r4, r0
+    asr r4, r4, 16
+    str r4, [r1]
+
+    ldr r1, =b_Multiplier
+    mov r5, r0
+    lsl r5, r5, 16
+    asr r5, r5, 16
+    str r5, [r1]
+
+    mov r6, 0
+    cmp r4, 0
+    bge a_sign_store
+    mov r6, 1
+a_sign_store:
+    ldr r1, =a_Sign
+    str r6, [r1]
+
+    mov r7, 0
+    cmp r5, 0
+    bge b_sign_store
+    mov r7, 1
+b_sign_store:
+    ldr r1, =b_Sign
+    str r7, [r1]
+
+    mov r8, 0
+    cmp r4, 0
+    beq prod_sign_store
+    cmp r5, 0
+    beq prod_sign_store
+    eor r8, r6, r7
+
+prod_sign_store:
+    ldr r1, =prod_Is_Neg
+    str r8, [r1]
+
+    mov r9, r4
+    cmp r9, 0
+    bge a_abs_store
+    rsb r9, r9, 0
+a_abs_store:
+    ldr r1, =a_Abs
+    str r9, [r1]
+
+    mov r10, r5
+    cmp r10, 0
+    bge b_abs_store
+    rsb r10, r10, 0
+b_abs_store:
+    ldr r1, =b_Abs
+    str r10, [r1]
+
+    mov r0, r9
+    mov r1, r10
+    mov r11, 0
+
+mult_loop:
+    cmp r1, 0
+    beq mult_done
+    tst r1, 1
+    beq no_add
+    add r11, r11, r0
+no_add:
+    lsl r0, r0, 1
+    lsr r1, r1, 1
+    b mult_loop
+
+mult_done:
+    ldr r2, =abs_Product
+    str r11, [r2]
+
+    cmp r8, 0
+    beq final_store
+    rsb r11, r11, 0
+
+final_store:
+    ldr r2, =final_Product
+    str r11, [r2]
+
+    mov r0, r11
     
     /*** STUDENTS: Place your code ABOVE this line!!! **************/
 
